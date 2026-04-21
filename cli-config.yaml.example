@@ -724,6 +724,8 @@ platform_toolsets:
 # Set the corresponding API key in .env: GROQ_API_KEY, OPENAI_API_KEY, or MISTRAL_API_KEY.
 stt:
   enabled: true
+  # send_transcription: false                      # Echo each transcript back to the user as a separate message before the agent replies
+  # send_transcription_header: "🎤 Heard:\n\n"      # Optional prefix for the echo message; empty string (default) sends the bare transcript
   # provider: "local"          # auto-detected if omitted
   local:
     model: "base"              # tiny | base | small | medium | large-v3 | turbo

@@ -247,6 +247,8 @@ class GatewayConfig:
 
     # STT settings
     stt_enabled: bool = True  # Whether to auto-transcribe inbound voice messages
+    stt_send_transcription: bool = False  # Echo the transcript back to the user as a separate message before the agent responds
+    stt_send_transcription_header: str = ""  # Optional prefix (e.g. "🎤 **Voice Transcription**\n\n"). Empty means no header.
 
     # Session isolation in shared chats
     group_sessions_per_user: bool = True  # Isolate group/channel sessions per participant when user IDs are available
@@ -368,6 +370,8 @@ class GatewayConfig:
             "sessions_dir": str(self.sessions_dir),
             "always_log_local": self.always_log_local,
             "stt_enabled": self.stt_enabled,
+            "stt_send_transcription": self.stt_send_transcription,
+            "stt_send_transcription_header": self.stt_send_transcription_header,
             "group_sessions_per_user": self.group_sessions_per_user,
             "thread_sessions_per_user": self.thread_sessions_per_user,
             "unauthorized_dm_behavior": self.unauthorized_dm_behavior,
@@ -412,6 +416,12 @@ class GatewayConfig:
         stt_enabled = data.get("stt_enabled")
         if stt_enabled is None:
             stt_enabled = data.get("stt", {}).get("enabled") if isinstance(data.get("stt"), dict) else None
+        
+        stt_block = data.get("stt") if isinstance(data.get("stt"), dict) else {}
+        stt_send_transcription = stt_block.get("send_transcription")
+        stt_send_transcription_header = stt_block.get("send_transcription_header") or ""
+        if not isinstance(stt_send_transcription_header, str):
+            stt_send_transcription_header = str(stt_send_transcription_header)
 
         group_sessions_per_user = data.get("group_sessions_per_user")
         thread_sessions_per_user = data.get("thread_sessions_per_user")
@@ -437,6 +447,8 @@ class GatewayConfig:
             sessions_dir=sessions_dir,
             always_log_local=data.get("always_log_local", True),
             stt_enabled=_coerce_bool(stt_enabled, True),
+            stt_send_transcription=_coerce_bool(stt_send_transcription, False),
+            stt_send_transcription_header=stt_send_transcription_header,
             group_sessions_per_user=_coerce_bool(group_sessions_per_user, True),
             thread_sessions_per_user=_coerce_bool(thread_sessions_per_user, False),
             unauthorized_dm_behavior=unauthorized_dm_behavior,

@@ -127,6 +127,10 @@ COMMAND_REGISTRY: list[CommandDef] = [
                args_hint="[name]"),
     CommandDef("voice", "Toggle voice mode", "Configuration",
                args_hint="[on|off|tts|status]", subcommands=("on", "off", "tts", "status")),
+    CommandDef("stt", "Configure speech-to-text gateway features",
+               "Configuration", gateway_only=True,
+               args_hint="echo [on|off|status]",
+               subcommands=("echo",)),
 
     # Tools & Skills
     CommandDef("tools", "Manage tools: /tools [list|disable|enable] [name...]", "Tools & Skills",

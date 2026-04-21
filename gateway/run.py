@@ -3519,6 +3519,9 @@ class GatewayRunner:
         if canonical == "yolo":
             return await self._handle_yolo_command(event)
 
+        if canonical == "stt":
+            return await self._handle_stt_command(event)
+
         if canonical == "model":
             return await self._handle_model_command(event)
 
@@ -3820,6 +3823,7 @@ class GatewayRunner:
                 message_text = await self._enrich_message_with_transcription(
                     message_text,
                     audio_paths,
+                    source=source,
                 )
                 _stt_fail_markers = (
                     "No STT provider",
@@ -6932,6 +6936,77 @@ class GatewayRunner:
             logger.warning("Failed to save tool_progress mode: %s", e)
             return f"{descriptions[new_mode]}\n_(could not save to config: {e})_"
 
+    async def _handle_stt_command(self, event: MessageEvent) -> str:
+        """Handle /stt — toggle gateway STT features. Persists to config.yaml.
+
+        Supported forms:
+          /stt                       → show status
+          /stt status                → show status
+          /stt echo                  → toggle transcription echo on/off
+          /stt echo on|off           → set transcription echo explicitly
+          /stt echo status           → show just the echo setting
+        """
+        import yaml
+
+        args = event.get_command_args().strip().lower().split()
+
+        if not args or args[0] == "status":
+            send_on = getattr(self.config, "stt_send_transcription", False)
+            header = getattr(self.config, "stt_send_transcription_header", "") or ""
+            header_preview = repr(header) if header else "(none)"
+            stt_on = getattr(self.config, "stt_enabled", True)
+            return (
+                "🎤 **STT Status**\n"
+                f"• Auto-transcribe inbound voice: **{'ON' if stt_on else 'OFF'}**\n"
+                f"• Echo transcription back to chat: **{'ON' if send_on else 'OFF'}**\n"
+                f"• Transcription header: {header_preview}\n\n"
+                "Use `/stt echo on|off` to toggle the echo."
+            )
+
+        sub = args[0]
+        if sub != "echo":
+            return (
+                f"Unknown subcommand: `{sub}`.\n"
+                "Usage: `/stt [echo [on|off|status]]`"
+            )
+
+        action = args[1] if len(args) > 1 else None
+        current = getattr(self.config, "stt_send_transcription", False)
+
+        if action in ("on", "enable"):
+            new_value = True
+        elif action in ("off", "disable"):
+            new_value = False
+        elif action == "status":
+            return f"🎤 Transcription echo is currently **{'ON' if current else 'OFF'}**."
+        elif action is None:
+            new_value = not current
+        else:
+            return (
+                f"Unknown option: `{action}`.\n"
+                "Usage: `/stt echo [on|off|status]`"
+            )
+
+        self.config.stt_send_transcription = new_value
+
+        config_path = _hermes_home / "config.yaml"
+        try:
+            user_config: dict = {}
+            if config_path.exists():
+                with open(config_path, encoding="utf-8") as f:
+                    user_config = yaml.safe_load(f) or {}
+            if not isinstance(user_config.get("stt"), dict):
+                user_config["stt"] = {}
+            user_config["stt"]["send_transcription"] = new_value
+            atomic_yaml_write(config_path, user_config)
+            return f"🎤 Echo: **{'ON' if new_value else 'OFF'}**"
+        except Exception as e:
+            logger.warning("Failed to save stt.send_transcription: %s", e)
+            return (
+                f"🎤 Echo: **{'ON' if new_value else 'OFF'}** (in-memory only)\n"
+                f"_(could not save to config: {e})_"
+            )
+
     async def _handle_compress_command(self, event: MessageEvent) -> str:
         """Handle /compress command -- manually compress conversation context.
 
@@ -8182,6 +8257,7 @@ class GatewayRunner:
         self,
         user_text: str,
         audio_paths: List[str],
+        source: Optional[SessionSource] = None,
     ) -> str:
         """
         Auto-transcribe user voice/audio messages using the configured STT provider
@@ -8190,6 +8266,9 @@ class GatewayRunner:
         Args:
             user_text:   The user's original caption / message text.
             audio_paths: List of local file paths to cached audio files.
+            source:      MessageSource — when provided and stt_send_transcription
+                         is enabled, the transcript is echoed back to the chat as
+                         a separate message before the agent responds.
 
         Returns:
             The enriched message string with transcriptions prepended.
@@ -8208,6 +8287,9 @@ class GatewayRunner:
 
         from tools.transcription_tools import transcribe_audio
 
+        stt_send_transcription = getattr(self.config, "stt_send_transcription", False)
+        stt_send_transcription_header = getattr(self.config, "stt_send_transcription_header", "") or ""
+
         enriched_parts = []
         for path in audio_paths:
             try:
@@ -8219,6 +8301,10 @@ class GatewayRunner:
                         f'[The user sent a voice message~ '
                         f'Here\'s what they said: "{transcript}"]'
                     )
+                    if stt_send_transcription and source:
+                        await self._echo_transcription(
+                            source, stt_send_transcription_header + transcript
+                        )
                 else:
                     error = result.get("error", "unknown error")
                     if (
@@ -8262,6 +8348,17 @@ class GatewayRunner:
                 return f"{prefix}\n\n{user_text}"
             return prefix
         return user_text
+
+    async def _echo_transcription(self, source: SessionSource, message: str) -> None:
+        """Send a transcript echo back to the user; a send failure only warns."""
+        adapter = self.adapters.get(source.platform)
+        if not adapter:
+            return
+        metadata = {"thread_id": source.thread_id} if source.thread_id else None
+        try:
+            await adapter.send(source.chat_id, message, metadata=metadata)
+        except Exception as exc:
+            logger.warning("Failed to send transcription echo: %s", exc)
 
     def _build_process_event_source(self, evt: dict):
         """Resolve the canonical source for a synthetic background-process event.

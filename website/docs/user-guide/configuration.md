@@ -1018,6 +1018,8 @@ Hashes are deterministic — the same user always maps to the same hash, so the 
 ```yaml
 stt:
   provider: "local"            # "local" | "groq" | "openai" | "mistral"
+  send_transcription: false    # Echo the transcript back to the user as a separate message before the agent replies
+  send_transcription_header: ""  # Optional prefix for the echo message (e.g. "🎤 **Voice Transcription**\n\n"). Empty = no header.
   local:
     model: "base"              # tiny, base, small, medium, large-v3
   openai:
@@ -1041,6 +1043,30 @@ STT_OPENAI_MODEL=whisper-1
 GROQ_BASE_URL=https://api.groq.com/openai/v1
 STT_OPENAI_BASE_URL=https://api.openai.com/v1
 ```
+
+### Echo Transcription Back to the User (Gateway)
+
+When using Hermes via messaging platforms (Telegram, Discord, etc.), you can have the gateway echo each voice-message transcript back as a separate message before the agent replies:
+
+```yaml
+stt:
+  enabled: true
+  send_transcription: true  # Echo the transcript back to the user
+  send_transcription_header: "🎤 **Voice Transcription**\n\n"  # Optional prefix; omit or leave empty for a bare transcript
+```
+
+**How it works:**
+1. You send a voice message.
+2. Hermes sends a separate message containing the transcript, optionally prefixed with `send_transcription_header`.
+3. The agent then replies normally to the transcribed message.
+
+By default, `send_transcription_header` is empty, so the echo is just the bare transcript. Set it to any string (emojis and `\n` allowed) to add a header. If a platform ever delivers multiple audio clips in a single message, each clip gets its own echo.
+
+This is useful for verifying accuracy on technical terms, names, or complex instructions. The setting is opt-in and defaults to `false`.
+
+:::tip
+Echo failures are handled gracefully — if the echo message fails to send (network error, etc.), the agent still replies normally with the transcript in its context.
+:::
 
 ## Voice Mode (CLI)
 
