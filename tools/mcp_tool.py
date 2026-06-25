@@ -1418,7 +1418,7 @@ class MCPServerTask:
         "_sampling", "_elicitation",
         "_registered_tool_names", "_auth_type", "_refresh_lock",
         "_rpc_lock", "_pending_refresh_tasks",
-        "_pending_call_context",
+        "_pending_call_context", "_current_call",
         "initialize_result", "_ping_unsupported",
     )
 
@@ -1461,6 +1461,11 @@ class MCPServerTask:
         # gateway-platform attribution and routes the approval prompt
         # to the right surface (Telegram, Slack, etc.).
         self._pending_call_context: Optional[contextvars.Context] = None
+        # Metadata for the tool call currently in flight (server_name /
+        # tool_name / session_id), set around ``session.call_tool`` so the
+        # MCP transport's per-request header hook can attribute outbound HTTP
+        # requests to the right tool/session. None when no call is active.
+        self._current_call: Optional[dict] = None
         # Captures the ``InitializeResult`` returned by
         # ``await session.initialize()`` so downstream code can inspect the
         # server's real advertised capabilities (``.capabilities.resources``,
@@ -2092,7 +2097,10 @@ class MCPServerTask:
                 "follow_redirects": True,
                 "timeout": httpx.Timeout(float(connect_timeout), read=300.0),
                 "verify": ssl_verify,
-                "event_hooks": {"response": [_strip_auth_on_cross_origin_redirect]},
+                "event_hooks": {
+                    "request": [_make_mcp_request_header_hook(self)],
+                    "response": [_strip_auth_on_cross_origin_redirect],
+                },
             }
             if headers:
                 client_kwargs["headers"] = headers
@@ -3115,6 +3123,45 @@ async def _connect_server(name: str, config: dict) -> MCPServerTask:
 # Handler / check-fn factories
 # ---------------------------------------------------------------------------
 
+def _make_mcp_request_header_hook(server):
+    """Build an httpx *request* event hook that injects plugin-supplied headers.
+
+    Fires the ``mcp_request_headers`` plugin hook per outbound MCP HTTP request
+    and merges every returned ``{header: value}`` dict onto the request. The
+    primary consumer is distributed tracing (a plugin returns a W3C
+    ``traceparent`` so the MCP server's spans link into the agent's trace).
+
+    Best-effort and defensive: any failure (hook error, plugin system absent)
+    leaves the request unmodified rather than breaking the MCP call. The
+    in-flight tool/session is read from ``server._current_call`` so headers can
+    be attributed correctly.
+    """
+
+    async def _inject(request):
+        try:
+            from hermes_cli.plugins import invoke_hook
+        except Exception:
+            return
+        call = getattr(server, "_current_call", None) or {}
+        try:
+            results = invoke_hook(
+                "mcp_request_headers",
+                server_name=server.name,
+                tool_name=call.get("tool_name"),
+                session_id=call.get("session_id"),
+            )
+        except Exception:
+            return
+        for result in results or []:
+            if not isinstance(result, dict):
+                continue
+            for key, value in result.items():
+                if key and value:
+                    request.headers[str(key)] = str(value)
+
+    return _inject
+
+
 def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
     """Return a sync handler that calls an MCP tool via the background loop.
 
@@ -3157,6 +3204,8 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
                 "error": f"MCP server '{server_name}' is not connected"
             }, ensure_ascii=False)
 
+        session_id = kwargs.get("session_id")
+
         async def _call():
             async with server._rpc_lock:
                 # Snapshot the agent's context so an elicitation callback
@@ -3164,10 +3213,18 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
                 # task, which doesn't inherit our contextvars) can replay
                 # it and detect the gateway platform / session for routing.
                 server._pending_call_context = contextvars.copy_context()
+                # Record the in-flight call so the transport's per-request
+                # header hook (mcp_request_headers) can attribute outbound
+                # HTTP requests to this tool/session.
+                server._current_call = {
+                    "tool_name": tool_name,
+                    "session_id": session_id,
+                }
                 try:
                     result = await server.session.call_tool(tool_name, arguments=args)
                 finally:
                     server._pending_call_context = None
+                    server._current_call = None
             # MCP CallToolResult has .content (list of content blocks) and .isError
             if result.isError:
                 error_text = ""
