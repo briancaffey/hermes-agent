@@ -139,6 +139,11 @@ VALID_HOOKS: Set[str] = {
     "pre_api_request",
     "post_api_request",
     "api_request_error",
+    # Outbound MCP HTTP request headers. Fired per request on the MCP
+    # transport's httpx client; each plugin returns a dict of headers to merge
+    # onto the request (e.g. a W3C `traceparent` for distributed tracing).
+    # Kwargs: server_name, tool_name, session_id. Return {} to add nothing.
+    "mcp_request_headers",
     "on_session_start",
     "on_session_end",
     "on_session_finalize",
